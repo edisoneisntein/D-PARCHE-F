@@ -1,0 +1,6 @@
+{
+  "name": "Agnes Video Generator",
+  "description": "Free AI short-video generator powered by Agnes AI. Multi-scene text-to-video, image generation, TTS narration, subtitles, and compositing with web UI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

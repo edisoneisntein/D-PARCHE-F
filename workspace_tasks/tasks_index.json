@@ -1,0 +1,63 @@
+[
+  {
+    "task_id": "ffb8d7752ebb",
+    "task_type": "simple",
+    "status": "running",
+    "dir_name": "20261002_ffb8d7752ebb",
+    "creative_name": "simple_ffb8d7752ebb",
+    "created_at": "2026-10-02T03:36:46.394Z",
+    "prompt": "Futuristic city with flying cars",
+    "mode": "t2v",
+    "duration": 5,
+    "current_step": "video_gen",
+    "current_progress": 60,
+    "current_message": "Generating video frames with Agnes AI...",
+    "scene_count": 1,
+    "active": true
+  },
+  {
+    "task_id": "ef7075f148f0",
+    "task_type": "simple",
+    "status": "completed",
+    "dir_name": "20261002_ef7075f148f0",
+    "creative_name": "simple_ef7075f148f0",
+    "created_at": "2026-10-02T04:05:17.465Z",
+    "prompt": "Test real generation",
+    "mode": "t2v",
+    "duration": 3,
+    "current_step": "video_gen",
+    "current_progress": 100,
+    "current_message": "Video generated successfully!",
+    "scene_count": 1,
+    "active": false,
+    "final_video_file": "/app/applet/workspace_tasks/ef7075f148f0/final_video.mp4",
+    "artifacts": [
+      {
+        "artifact_id": "final_video",
+        "category": "video",
+        "label_key": "artifactFinalVideo",
+        "step_key": "video_gen",
+        "size": 1048576,
+        "exists": true,
+        "deletable": false
+      }
+    ]
+  },
+  {
+    "task_id": "e8a7082ed7a4",
+    "task_type": "simple",
+    "status": "stopped",
+    "dir_name": "20261002_e8a7082ed7a4",
+    "creative_name": "simple_e8a7082ed7a4",
+    "created_at": "2026-10-02T22:03:01.445Z",
+    "prompt": "A futuristic cyberpunk drone flying over neon streets",
+    "mode": "t2v",
+    "duration": 5,
+    "current_step": "video_gen",
+    "current_progress": 36,
+    "current_message": "Task stopped by user",
+    "scene_count": 1,
+    "active": true,
+    "upstream_task_id": "task_rhCFB9ToFEKhe69VMzQsTY0j4dAPuPNV"
+  }
+]

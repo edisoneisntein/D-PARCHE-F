@@ -1,0 +1,206 @@
+@import "tailwindcss";
+
+/* ── CYBERPUNK TELEMETRY INDUSTRIAL PALETTE ── */
+:root {
+  --bg-void: #07090e;
+  --bg-primary: #0d1117;
+  --bg-secondary: #13171f;
+  --bg-tertiary: #1a202c;
+  --bg-inset: #090c10;
+  --border-metal: #30363d;
+  --border-metal-dark: #21262d;
+  --border-metal-bright: #484f58;
+  --accent-cyan: #00f0ff;
+  --accent-cyan-dim: rgba(0, 240, 255, 0.15);
+  --accent-cyan-mid: rgba(0, 240, 255, 0.35);
+  --status-green: #00ff41;
+  --status-green-dim: rgba(0, 255, 65, 0.15);
+  --status-amber: #ffaa00;
+  --status-crimson: #ff003c;
+  --text-primary: #f0f6fc;
+  --text-secondary: #c9d1d9;
+  --text-muted: #8b949e;
+  --text-dark: #484f58;
+}
+
+/* ── GLOBAL TELEMETRY RESET (NO SOFT ROUNDING, NO SOFT SHADOWS, PURE MONO) ── */
+* {
+  border-radius: 0px !important;
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+body {
+  background-color: var(--bg-void);
+  color: var(--text-secondary);
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* ── HIGH-CONTRAST NEON GLOWS (HUD LIGHTING) ── */
+.hud-text-glow {
+  color: #00f0ff !important;
+  text-shadow: 0 0 6px rgba(0, 240, 255, 0.9), 0 0 14px rgba(0, 240, 255, 0.45);
+}
+
+.hud-green-glow {
+  color: #00ff41 !important;
+  text-shadow: 0 0 6px rgba(0, 255, 65, 0.9), 0 0 14px rgba(0, 255, 65, 0.45);
+}
+
+.hud-green-box {
+  background-color: rgba(0, 255, 65, 0.12);
+  border: 1px solid #00ff41;
+  box-shadow: 0 0 10px rgba(0, 255, 65, 0.35), inset 0 0 6px rgba(0, 255, 65, 0.2);
+}
+
+.hud-cyan-box {
+  background-color: rgba(0, 240, 255, 0.1);
+  border: 1px solid #00f0ff;
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.35), inset 0 0 8px rgba(0, 240, 255, 0.15);
+}
+
+/* ── INSET INDUSTRIAL PANELS (EMPOTRADOS CON MICRO-SOMBRAS) ── */
+.panel-inset {
+  background-color: #0d1117;
+  border: 1px solid #30363d;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.8), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+.panel-inset-deep {
+  background-color: #090c10;
+  border: 1px solid #21262d;
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.9), inset 0 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+/* ── INDUSTRIAL BEVEL FRAMING ── */
+.panel-bevel-frame {
+  position: relative;
+  background-color: #0d1117;
+  border: 1px solid #30363d;
+}
+
+.panel-bevel-frame::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: 8px;
+  height: 8px;
+  border-top: 2px solid #00f0ff;
+  border-left: 2px solid #00f0ff;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.panel-bevel-frame::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border-bottom: 2px solid #00f0ff;
+  border-right: 2px solid #00f0ff;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* ── SMOKED GLASS HUD OVERLAY ── */
+.smoked-glass {
+  background-color: rgba(13, 17, 23, 0.88);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(48, 54, 61, 0.8);
+}
+
+/* ── SCANLINE OVERLAYS ── */
+.scanline-overlay {
+  background: linear-gradient(
+    180deg,
+    rgba(0, 240, 255, 0) 50%,
+    rgba(0, 240, 255, 0.035) 50%
+  );
+  background-size: 100% 4px;
+  pointer-events: none;
+}
+
+/* ── GRID PATTERN ── */
+.grid-cross-pattern {
+  background-image: 
+    radial-gradient(rgba(48, 54, 61, 0.6) 1px, transparent 1px),
+    linear-gradient(to right, rgba(48, 54, 61, 0.12) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(48, 54, 61, 0.12) 1px, transparent 1px);
+  background-size: 20px 20px, 4px 4px, 4px 4px;
+}
+
+/* ── ANALOG SLIDERS & DIALS ── */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 14px;
+  background: #30363d;
+  border: 1px solid #00f0ff;
+  box-shadow: 0 0 5px rgba(0, 240, 255, 0.5);
+  cursor: pointer;
+  transition: none;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  background: #00f0ff;
+  box-shadow: 0 0 8px #00f0ff;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 14px;
+  background: #30363d;
+  border: 1px solid #00f0ff;
+  cursor: pointer;
+  border-radius: 0;
+}
+
+/* Rotary Dial Simulation */
+.rotary-knob {
+  width: 24px;
+  height: 24px;
+  border: 2px solid #484f58;
+  background: radial-gradient(circle at 35% 35%, #21262d 0%, #0d1117 70%);
+  position: relative;
+  box-shadow: inset 0 1px 2px rgba(255,255,255,0.1), 0 2px 4px rgba(0,0,0,0.8);
+}
+
+.rotary-knob::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2px;
+  height: 6px;
+  background-color: #00f0ff;
+  box-shadow: 0 0 4px #00f0ff;
+}
+
+/* ── SCROLLBARS ── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #090c10;
+}
+::-webkit-scrollbar-thumb {
+  background: #30363d;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #00f0ff;
+}
