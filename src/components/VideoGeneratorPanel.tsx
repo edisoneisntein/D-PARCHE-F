@@ -75,6 +75,10 @@ export const VideoGeneratorPanel: React.FC = () => {
   const stopGeneration = useVideoStore((s) => s.stopGeneration);
   const previewScript = useVideoStore((s) => s.previewScript);
 
+  const activeTab = useVideoStore((s) => s.activeTab);
+  const creativeSceneCount = useVideoStore((s) => s.creativeSceneCount);
+  const isCreative = activeTab === 'Creative';
+
   const [validationError, setValidationError] = useState<string | null>(null);
   const singleFileInputRef = useRef<HTMLInputElement>(null);
   const multiFileInputRef = useRef<HTMLInputElement>(null);
@@ -180,11 +184,39 @@ export const VideoGeneratorPanel: React.FC = () => {
         <textarea
           value={prompt}
           onChange={(e) => setParam('prompt', e.target.value)}
-          placeholder="Escriba directivas cinematográficas y de acción..."
+          placeholder={isCreative
+            ? 'Describa la idea de su historia multi-escena...'
+            : 'Escriba directivas cinematográficas y de acción...'}
           rows={3}
           className="w-full bg-[#090c10] border border-[#21262d] text-[#c9d1d9] text-[10px] p-2 font-mono outline-none resize-none focus:border-[#00f0ff] shadow-inner selection:bg-[#00f0ff]/20"
         />
       </div>
+
+      {/* ── 1b. MODO CREATIVO: MULTI-ESCENA ── */}
+      {isCreative && (
+        <div className="panel-inset p-2 space-y-1.5 border border-[#00f0ff]/40">
+          <div className="flex items-center justify-between text-[10px]">
+            <span className="text-[#00f0ff] font-bold">MULTI-ESCENA ACTIVADO</span>
+            <span className="text-[8px] text-[#8b949e]">IA guion → video por escena → concat</span>
+          </div>
+          <label className="text-[10px] text-[#8b949e] flex items-center justify-between">
+            <span>Número de escenas</span>
+            <span className="text-[#f0f6fc] font-bold">{creativeSceneCount}</span>
+          </label>
+          <input
+            type="range"
+            min={2}
+            max={8}
+            step={1}
+            value={creativeSceneCount}
+            onChange={(e) => setParam('creativeSceneCount', parseInt(e.target.value, 10))}
+            className="w-full accent-[#00f0ff]"
+          />
+          <p className="text-[8px] text-[#8b949e] leading-tight">
+            Cada escena se genera como un clip independiente y luego se unen con ffmpeg en un solo video.
+          </p>
+        </div>
+      )}
 
       {/* ── 2. DUAL INGESTION: REFERENCE SEED & REAL Z-BUFFER DEPTH MAP ── */}
       <div className="panel-inset p-2 space-y-1.5">

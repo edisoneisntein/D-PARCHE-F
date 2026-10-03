@@ -1,8 +1,8 @@
 import { TaskState, TaskStateSchema } from '../contracts/schemas';
 
 export class VideoApiClient {
-  static async submitTask(formData: FormData, signal?: AbortSignal): Promise<string> {
-    const res = await fetch('/api/tasks/simple', {
+  static async submitTask(formData: FormData, signal?: AbortSignal, endpoint = '/api/tasks/simple'): Promise<string> {
+    const res = await fetch(endpoint, {
       method: 'POST',
       body: formData,
       signal,

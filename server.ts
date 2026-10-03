@@ -58,6 +58,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 // ── In-Memory & Persistent State ──────────────────────────────
 interface AppConfig {
   api_keys: { key: string; domain?: string; source: 'config' | 'env' }[];
+  gemini_api_key?: string;
   selected_models: { text: string; image: string; video: string; text_provider: string };
   agnes_domain: 'com' | 'cn' | 'cn_bak';
   watermark: { enabled: boolean; text: string; position: string };
@@ -305,78 +306,94 @@ export async function testAgnesConnection(apiKey: string, domain = currentConfig
   }
 }
 
-async function executeAgnesVideoPipeline(task: TaskItem): Promise<void> {
+async function executeAgnesVideoPipeline(
+  task: TaskItem,
+  opts?: { promptOverride?: string; outFileName?: string; progressStart?: number; progressSpan?: number; finalize?: boolean; imageRefOverride?: string; imageRefsOverride?: string[]; seedOverride?: number },
+): Promise<string | undefined> {
   const apiKey = getActiveKey();
   const domain = currentConfig.agnes_domain || 'com';
   const baseUrl = getBaseUrl(domain);
 
-  if (!apiKey || apiKey === 'your-api-key-here' || apiKey.trim() === '') {
+  const finalize = opts?.finalize ?? true;
+  const progressBase = opts?.progressStart ?? 0;
+  const progressSpan = opts?.progressSpan ?? 100;
+  const prog = (p: number) => Math.min(100, Math.round(progressBase + (p / 100) * progressSpan));
+  const failGracefully = (msg: string): void => {
+    if (!finalize) {
+      const err = new Error(msg);
+      err.name = 'AgnesPipelineError';
+      throw err;
+    }
     task.status = 'failed';
-    task.current_step = 'submit';
-    task.current_progress = 0;
-    task.current_message = 'ERROR: No se ha suministrado el API Key de Agnes. Por favor ingrese su clave en el botón [CONECTADO] de la barra superior.';
+    task.current_message = msg;
     persistTasks();
+  };
+
+  if (!apiKey || apiKey === 'your-api-key-here' || apiKey.trim() === '') {
+    failGracefully('ERROR: No se ha suministrado el API Key de Agnes. Por favor ingrese su clave en el botón [CONECTADO] de la barra superior.');
     return;
   }
 
   task.current_step = 'submit';
-  task.current_progress = 10;
+  task.current_progress = prog(10);
   task.current_message = 'Iniciando generación con Agnes AI...';
   persistTasks();
 
-  // 1. Prepare reference image if provided
-  let imageRefUrlOrBase64: string | undefined = undefined;
-  if (task.reference_image_path && fs.existsSync(task.reference_image_path)) {
-    try {
-      task.current_message = 'Codificando imagen de referencia...';
-      persistTasks();
-      const ext = path.extname(task.reference_image_path).toLowerCase();
-      const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
-      const fileBuf = fs.readFileSync(task.reference_image_path);
-      const b64Data = `data:${mime};base64,${fileBuf.toString('base64')}`;
-
-      // Try uploading to Agnes hosted storage
+  // 1. Prepare reference image(s) if provided
+  const effectiveRefPaths: string[] =
+    opts?.imageRefsOverride && opts.imageRefsOverride.length > 0
+      ? opts.imageRefsOverride
+      : opts?.imageRefOverride
+        ? [opts.imageRefOverride]
+        : (task.reference_image_path ? [task.reference_image_path] : []);
+  const imageRefs: string[] = [];
+  if (effectiveRefPaths.length > 0) {
+    task.current_message = 'Codificando imagen(es) de referencia...';
+    persistTasks();
+    for (const refPath of effectiveRefPaths.slice(0, 5)) {
       try {
-        const uploadRes = await fetch(`${baseUrl}/images/generations`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'agnes-image-2.5-flash',
-            prompt: 'Keep the image exactly as it is',
-            n: 1,
-            size: '1024x1024',
-            extra_body: {
-              response_format: 'url',
-              image: b64Data,
+        const ext = path.extname(refPath).toLowerCase();
+        const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
+        const fileBuf = fs.readFileSync(refPath);
+        const b64Data = `data:${mime};base64,${fileBuf.toString('base64')}`;
+        try {
+          const uploadRes = await fetch(`${baseUrl}/images/generations`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
             },
-          }),
-        });
-        if (uploadRes.ok) {
-          const uploadJson = await uploadRes.json();
-          if (uploadJson.data?.[0]?.url) {
-            imageRefUrlOrBase64 = uploadJson.data[0].url;
+            body: JSON.stringify({
+              model: 'agnes-image-2.5-flash',
+              prompt: 'Keep the image exactly as it is',
+              n: 1,
+              size: '1024x1024',
+              extra_body: { response_format: 'url', image: b64Data },
+            }),
+          });
+          if (uploadRes.ok) {
+            const uploadJson = await uploadRes.json();
+            if (uploadJson.data?.[0]?.url) {
+              imageRefs.push(uploadJson.data[0].url);
+              continue;
+            }
           }
+        } catch {
+          // fallback to base64 below
         }
-      } catch {
-        // Fallback to base64 if hosted generation is unavailable
+        imageRefs.push(b64Data);
+      } catch (e: unknown) {
+        console.warn('reference image unreadable:', refPath, e);
       }
-
-      if (!imageRefUrlOrBase64) {
-        imageRefUrlOrBase64 = b64Data;
-      }
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Error con imagen';
-      task.current_message = `Aviso imagen: ${msg}`;
     }
   }
+  const imageRefUrlOrBase64: string | undefined = imageRefs[0];
 
   // 2. Build model payload
   const model = task.model || currentConfig.selected_models?.video || 'agnes-video-v2.0';
   const duration = task.duration || 5;
-  const promptText = task.prompt || task.idea || task.manuscript_text || 'Cinematic sci-fi scene';
+  const promptText = opts?.promptOverride || task.prompt || task.idea || task.manuscript_text || 'Cinematic sci-fi scene';
+  const effectiveSeed = opts?.seedOverride ?? task.seed;
 
   let payload: Record<string, unknown> = {};
 
@@ -393,8 +410,8 @@ async function executeAgnesVideoPipeline(task: TaskItem): Promise<void> {
       seconds: String(secs),
       size: '720P',
       aspect_ratio: aspectRatio,
-      ...(task.seed !== undefined && task.seed >= 0 ? { seed: task.seed } : {}),
-      ...(imageRefUrlOrBase64 ? { images: [imageRefUrlOrBase64] } : {}),
+      ...(effectiveSeed !== undefined && effectiveSeed >= 0 ? { seed: effectiveSeed } : {}),
+      ...(imageRefs.length > 0 ? { images: imageRefs } : {}),
     };
   } else {
     // Agnes v2.0 protocol
@@ -416,7 +433,7 @@ async function executeAgnesVideoPipeline(task: TaskItem): Promise<void> {
       height,
       num_frames: numFrames,
       frame_rate: 24,
-      ...(task.seed !== undefined && task.seed >= 0 ? { seed: task.seed } : {}),
+      ...(effectiveSeed !== undefined && effectiveSeed >= 0 ? { seed: effectiveSeed } : {}),
       ...(task.conditioning_inputs ? { negative_prompt: task.conditioning_inputs } : {}),
       ...(imageRefUrlOrBase64 ? { image: imageRefUrlOrBase64, mode: 'ti2vid' } : {}),
     };
@@ -427,6 +444,9 @@ async function executeAgnesVideoPipeline(task: TaskItem): Promise<void> {
   let submitAttempts = 0;
   let lastErrMsg = '';
   const maxSubmitAttempts = 5;
+  // Queue-full (503) gets its own retry budget (queue saturation is transient and long-lived upstream)
+  let queueFullAttempts = 0;
+  const maxQueueFullAttempts = 20; // ~10 min at 30s backoff
 
   while (submitAttempts < maxSubmitAttempts) {
     submitAttempts++;
@@ -449,9 +469,7 @@ async function executeAgnesVideoPipeline(task: TaskItem): Promise<void> {
     }
 
     if (submitRes.status === 401) {
-      task.status = 'failed';
-      task.current_message = 'ERROR: Clave de API de Agnes inválida o no autorizada (HTTP 401). Configure su clave en el botón [CONECTADO].';
-      persistTasks();
+      failGracefully('ERROR: Clave de API de Agnes inválida o no autorizada (HTTP 401). Configure su clave en el botón [CONECTADO].');
       return;
     }
 
@@ -481,14 +499,21 @@ async function executeAgnesVideoPipeline(task: TaskItem): Promise<void> {
       task.current_message = `Límite de tasa alcanzado en Agnes (HTTP 429). Esperando 25s antes de reintentar...`;
       persistTasks();
       await new Promise((r) => setTimeout(r, 25000));
+      submitAttempts--; // rate limit doesn't consume the real error budget
       continue;
     }
 
-    // 503 queue full
+    // 503 queue full — own budget (this is by far the most common transient state upstream)
     if (errCode === 'video_queue_full' || submitRes.status === 503) {
-      task.current_message = `Cola de Agnes Video saturada (${errMsg || 'queue full'}). Esperando 30s...`;
+      queueFullAttempts++;
+      if (queueFullAttempts > maxQueueFullAttempts) {
+        failGracefully('Cola de Agnes Video saturada de forma persistente (~10 min). Intente de nuevo más tarde.');
+        return;
+      }
+      task.current_message = `Cola de Agnes Video saturada (intento ${queueFullAttempts}/${maxQueueFullAttempts}). Esperando 30s...`;
       persistTasks();
       await new Promise((r) => setTimeout(r, 30000));
+      submitAttempts--; // queue full doesn't consume the real error budget
       continue;
     }
 
@@ -500,24 +525,20 @@ async function executeAgnesVideoPipeline(task: TaskItem): Promise<void> {
       continue;
     }
 
-    task.status = 'failed';
-    task.current_message = `Error en envío a Agnes AI (HTTP ${submitRes.status}): ${errMsg || errText.slice(0, 150)}`;
-    persistTasks();
+    failGracefully(`Error en envío a Agnes AI (HTTP ${submitRes.status}): ${errMsg || errText.slice(0, 150)}`);
     return;
   }
 
   if (!videoId) {
-    task.status = 'failed';
-    task.current_message = lastErrMsg
+    failGracefully(lastErrMsg
       ? `ERROR Agnes AI: ${lastErrMsg}`
-      : 'ERROR: No se recibió ID de tarea de Agnes AI tras agotar reintentos.';
-    persistTasks();
+      : 'ERROR: No se recibió ID de tarea de Agnes AI tras agotar reintentos.');
     return;
   }
 
   task.upstream_task_id = videoId;
   task.current_step = 'video_gen';
-  task.current_progress = 25;
+  task.current_progress = prog(25);
   task.current_message = `Tarea asignada a Agnes AI [ID: ${videoId}]. Procesando inferencia GPU...`;
   persistTasks();
 
@@ -559,7 +580,7 @@ async function executeAgnesVideoPipeline(task: TaskItem): Promise<void> {
       const upstreamProgress = typeof pollData.progress === 'number' ? pollData.progress : 0;
 
       if (status === 'running' || status === 'processing' || status === 'pending') {
-        const estProgress = Math.min(95, Math.max(25, upstreamProgress || (25 + Math.floor((Date.now() - pollStart) / 1000 / 3))));
+        const estProgress = prog(Math.min(95, Math.max(25, upstreamProgress || (25 + Math.floor((Date.now() - pollStart) / 1000 / 3)))));
         task.current_progress = estProgress;
         task.current_message = `Renderizando video con Agnes AI: ${estProgress}%`;
         persistTasks();
@@ -567,7 +588,7 @@ async function executeAgnesVideoPipeline(task: TaskItem): Promise<void> {
       }
 
       if (status === 'completed') {
-        task.current_progress = 98;
+        task.current_progress = prog(98);
         task.current_message = 'Inferencia Agnes completada. Descargando video generado...';
         persistTasks();
 
@@ -584,8 +605,14 @@ async function executeAgnesVideoPipeline(task: TaskItem): Promise<void> {
         const videoBuffer = Buffer.from(await downloadRes.arrayBuffer());
         const taskDir = path.resolve(TASKS_DIR, task.dir_name || task.task_id);
         fs.mkdirSync(taskDir, { recursive: true });
-        const finalVideoPath = path.resolve(taskDir, 'final_video.mp4');
+        const finalVideoPath = path.resolve(taskDir, opts?.outFileName || 'final_video.mp4');
         fs.writeFileSync(finalVideoPath, videoBuffer);
+
+        if (!finalize) {
+          task.current_progress = prog(100);
+          persistTasks();
+          return finalVideoPath;
+        }
 
         task.final_video_file = finalVideoPath;
         task.status = 'completed';
@@ -603,24 +630,170 @@ async function executeAgnesVideoPipeline(task: TaskItem): Promise<void> {
           },
         ];
         persistTasks();
-        return;
+        return finalVideoPath;
       }
 
       if (status === 'failed') {
         const failureMsg = pollData.error?.message || pollData.message || 'Fallo de inferencia en Agnes AI';
-        task.status = 'failed';
-        task.current_message = `ERROR EN AGNES: ${failureMsg}`;
-        persistTasks();
+        failGracefully(`ERROR EN AGNES: ${failureMsg}`);
         return;
       }
     } catch (pollErr: unknown) {
+      if (pollErr instanceof Error && pollErr.name === 'AgnesPipelineError') {
+        throw pollErr; // definite scene failure: abort instead of polling on
+      }
       // transient network error, continue polling
     }
   }
 
-  task.status = 'failed';
-  task.current_message = 'ERROR: Tiempo de espera agotado (30 min) en Agnes AI.';
+  failGracefully('ERROR: Tiempo de espera agotado (30 min) en Agnes AI.');
+}
+
+// ── Creative Multi-Scene Runner ────────────────────────────────
+async function runCreativePipeline(taskId: string) {
+  const task = tasksMap.get(taskId);
+  if (!task) return;
+
+  task.status = 'running';
+  task.active = true;
   persistTasks();
+
+  try {
+    await executeCreativePipeline(task);
+  } catch (err: unknown) {
+    task.status = 'failed';
+    task.current_message = err instanceof Error ? err.message : 'Fallo en ejecución de la tarea';
+  } finally {
+    task.active = false;
+    persistTasks();
+  }
+}
+
+// ── Manual Multi-Clip Editor Pipeline ─────────────────────────
+// Each clip has its OWN prompt/seed/reference. Optionally chains the previous
+// clip's last frame as the next clip's first frame (i2v chaining).
+interface EditorClip {
+  prompt: string;
+  seed?: number;
+  chain?: boolean;        // use previous clip's last frame as first frame
+  refs?: string[];        // user's own reference image paths (up to 5)
+}
+
+async function executeClipEditorPipeline(task: TaskItem): Promise<void> {
+  const taskDir = path.resolve(TASKS_DIR, task.dir_name || task.task_id);
+  fs.mkdirSync(taskDir, { recursive: true });
+
+  const clips: EditorClip[] = task.editor_clips || [];
+  if (clips.length === 0) {
+    task.status = 'failed';
+    task.current_message = 'ERROR: El editor de clips no recibió ningún clip.';
+    persistTasks();
+    return;
+  }
+
+  task.scenes = clips.map((c, i) => ({ index: i + 1, scene_prompt: c.prompt, status: 'pending' }));
+  const sceneFiles: string[] = [];
+  const sceneSpan = 85 / clips.length;
+
+  for (let i = 0; i < clips.length; i++) {
+    if (task.status === 'stopped') {
+      task.current_message = 'Generación detenida por el usuario.';
+      persistTasks();
+      return;
+    }
+    const clip = clips[i];
+    task.scenes[i].status = 'running';
+    task.current_step = 'video_gen';
+    task.current_message = `Clip ${i + 1}/${clips.length}: ${clip.prompt.slice(0, 60)}...`;
+    persistTasks();
+
+    // Reference priority: user's own images first; otherwise chained previous frame
+    let refPaths: string[] | undefined =
+      clip.refs && clip.refs.length > 0 ? clip.refs : undefined;
+    if (!refPaths && clip.chain && i > 0 && sceneFiles[i - 1]) {
+      const chainFrame = path.resolve(taskDir, `chain_frame_${i + 1}.png`);
+      try {
+        task.current_message = `Clip ${i + 1}/${clips.length}: extrayendo último frame del clip anterior...`;
+        persistTasks();
+        await runFfmpeg(['-y', '-sseof', '-0.1', '-i', sceneFiles[i - 1], '-frames:v', '1', chainFrame]);
+        refPaths = [chainFrame];
+      } catch (e) {
+        console.warn('[ClipEditor] frame extraction failed, continuing without reference:', e);
+      }
+    }
+
+    const sceneFile = await executeAgnesVideoPipeline(task, {
+      promptOverride: clip.prompt,
+      outFileName: `scene_${i + 1}.mp4`,
+      progressStart: 5 + Math.round(sceneSpan * i),
+      progressSpan: Math.round(sceneSpan),
+      finalize: false,
+      imageRefsOverride: refPaths,
+      seedOverride: clip.seed,
+    });
+
+    if (!sceneFile || !fs.existsSync(sceneFile)) {
+      throw new Error(`El clip ${i + 1} no produjo video.`);
+    }
+    sceneFiles.push(sceneFile);
+    task.scenes[i].status = 'completed';
+    persistTasks();
+  }
+
+  // Concatenate all clips
+  task.current_step = 'concat';
+  task.current_progress = 92;
+  task.current_message = 'Concatenando clips con ffmpeg...';
+  persistTasks();
+
+  const finalVideoPath = path.resolve(taskDir, 'final_video.mp4');
+  await concatVideos(sceneFiles, finalVideoPath);
+
+  task.final_video_file = finalVideoPath;
+  task.status = 'completed';
+  task.current_step = 'done';
+  task.current_progress = 100;
+  task.current_message = 'COMPLETADO';
+  task.artifacts = [
+    {
+      artifact_id: 'final_video',
+      category: 'video',
+      label_key: 'artifactFinalVideo',
+      step_key: 'concat',
+      size: fs.statSync(finalVideoPath).size,
+      exists: true,
+      deletable: false,
+    },
+    ...sceneFiles.map((f, i) => ({
+      artifact_id: `scene_${i + 1}`,
+      category: 'video',
+      label_key: `Clip ${i + 1}`,
+      step_key: 'video_gen',
+      size: fs.statSync(f).size,
+      exists: true,
+      deletable: false,
+    })),
+  ];
+  persistTasks();
+}
+
+async function runClipEditorPipeline(taskId: string) {
+  const task = tasksMap.get(taskId);
+  if (!task) return;
+
+  task.status = 'running';
+  task.active = true;
+  persistTasks();
+
+  try {
+    await executeClipEditorPipeline(task);
+  } catch (err: unknown) {
+    task.status = 'failed';
+    task.current_message = err instanceof Error ? err.message : 'Fallo en ejecución de la tarea';
+  } finally {
+    task.active = false;
+    persistTasks();
+  }
 }
 
 // ── Task Runner ────────────────────────────────────────────────
@@ -1009,73 +1182,259 @@ app.get('/api/voices/compat', (req: Request, res: Response) => {
 });
 
 // Screenwriter & Previews (using Gemini if available, or smart generation)
+// ── Creative multi-scene helpers ─────────────────────────────
+interface ScriptScene { index: number; scene_prompt: string; narration_text: string }
+
+// OpenAI-compatible chat completion (JSON mode), used by NIM and Agnes chat
+async function chatCompleteJson(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  prompt: string,
+): Promise<any> {
+  const res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: 'You are an expert AI screenwriter. Respond with valid JSON only.' },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.8,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Chat API HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  const text: string = data.choices?.[0]?.message?.content || '';
+  const cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('No JSON object in LLM response');
+  return JSON.parse(jsonMatch[0]);
+}
+
+async function generateScriptScenes(
+  idea: string,
+  contentLang: string,
+  sceneCount: number,
+): Promise<{ story: string; scenes: ScriptScene[]; narration: string; source: 'nim' | 'agnes' | 'gemini' | 'template' }> {
+  const langName = contentLang === 'zh' ? 'Chinese' : contentLang === 'es' ? 'Spanish' : 'English';
+  const prompt = `You are an expert AI screenwriter and video director.
+Create a ${sceneCount}-scene video script based on this theme:
+"${idea}"
+Language for story and narration: ${langName}.
+For scene visual prompts, write precise English cinematic visual prompts for an AI video model.
+
+Output valid JSON only with this schema:
+{
+  "story": "Short overall story summary in ${langName}",
+  "scenes": [
+    { "index": 1, "scene_prompt": "Cinematic visual prompt in English...", "narration_text": "Narration text in ${langName}..." }
+  ],
+  "narration": "Full narration script in ${langName}..."
+}`;
+
+  const normalize = (data: any): { story: string; scenes: ScriptScene[]; narration: string } | null => {
+    const scenes: ScriptScene[] = (data?.scenes || []).map((s: any, i: number) => ({
+      index: i + 1,
+      scene_prompt: s.scene_prompt || `Cinematic shot of ${idea}`,
+      narration_text: s.narration_text || '',
+    }));
+    if (scenes.length === 0) return null;
+    return {
+      story: data.story || idea,
+      scenes,
+      narration: data.narration || scenes.map((s) => s.narration_text).join(' '),
+    };
+  };
+
+  const agnesKey = getActiveKey();
+  const providers: { name: 'nim' | 'agnes'; baseUrl: string; key: string; model: string }[] = [];
+
+  // 1. NVIDIA NIM (user-preferred)
+  if (process.env.NVIDIA_API_KEY) {
+    providers.push({
+      name: 'nim',
+      baseUrl: process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1',
+      key: process.env.NVIDIA_API_KEY,
+      model: process.env.NVIDIA_TEXT_MODEL || 'nvidia/llama-3.3-70b-instruct',
+    });
+  }
+
+  // 2. Agnes Chat (zero extra dependency, same API key as video)
+  if (agnesKey && agnesKey !== 'your-api-key-here') {
+    providers.push({
+      name: 'agnes',
+      baseUrl: getBaseUrl(currentConfig.agnes_domain),
+      key: agnesKey,
+      model: currentConfig.selected_models?.text || 'agnes-3.0-flash',
+    });
+  }
+
+  for (const p of providers) {
+    try {
+      const data = await chatCompleteJson(p.baseUrl, p.key, p.model, prompt);
+      const parsed = normalize(data);
+      if (parsed) return { ...parsed, source: p.name };
+    } catch (e) {
+      console.warn(`[Chain] ${p.name} script generation failed, trying next:`, e);
+    }
+  }
+
+  const scenes: ScriptScene[] = Array.from({ length: sceneCount }, (_, i) => ({
+    index: i + 1,
+    scene_prompt: `Cinematic wide shot, scene ${i + 1} of ${idea}, realistic lighting, ultra high resolution 4k, vivid cinematic atmosphere.`,
+    narration_text: `Scene ${i + 1}: ${idea}. Visualizing the key moment with breathtaking detail.`,
+  }));
+  return {
+    story: `An engaging ${sceneCount}-part visual story revolving around: ${idea}.`,
+    scenes,
+    narration: scenes.map((s) => s.narration_text).join(' '),
+    source: 'template',
+  };
+}
+
+function runFfmpeg(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const ff = spawn('ffmpeg', args);
+    let stderr = '';
+    ff.stderr.on('data', (d) => { stderr += d.toString(); });
+    ff.on('error', reject);
+    ff.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(-400)}`));
+    });
+  });
+}
+
+// Concatenate scene videos with ffmpeg (fast -c copy, re-encode fallback)
+async function concatVideos(sceneFiles: string[], outPath: string): Promise<void> {
+  const listFile = path.resolve(path.dirname(outPath), `concat_${Date.now()}.txt`);
+  const content = sceneFiles.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join('\n');
+  fs.writeFileSync(listFile, content, 'utf-8');
+  try {
+    await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', outPath]);
+  } catch {
+    await runFfmpeg([
+      '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '20',
+      '-c:a', 'aac', '-b:a', '128k', outPath,
+    ]);
+  } finally {
+    fs.rmSync(listFile, { force: true });
+  }
+}
+
+// Creative multi-scene pipeline: script (LLM) → video per scene → ffmpeg concat
+async function executeCreativePipeline(task: TaskItem): Promise<void> {
+  const taskDir = path.resolve(TASKS_DIR, task.dir_name || task.task_id);
+  fs.mkdirSync(taskDir, { recursive: true });
+
+  // 1. Build scenes via LLM (or template fallback)
+  task.current_step = 'build_scenes';
+  task.current_progress = 5;
+  task.current_message = 'Generando guion multi-escena con IA...';
+  persistTasks();
+
+  const sceneCount = Math.max(1, Math.min(task.scene_count || 5, 10));
+  const script = await generateScriptScenes(task.idea || task.prompt || '', task.content_lang || 'es', sceneCount);
+  task.scenes = script.scenes.map((s) => ({ ...s, status: 'pending' }));
+  task.narration = script.narration;
+  task.story = script.story;
+  const srcLabel = script.source === 'nim' ? 'NVIDIA NIM' : script.source === 'agnes' ? 'Agnes Chat' : 'plantilla';
+  task.current_message = `Guion listo (${srcLabel}): ${script.scenes.length} escenas. Iniciando generación de video...`;
+  persistTasks();
+
+  // 2. Generate one video per scene (sequentially, Agnes accepted rate)
+  const sceneFiles: string[] = [];
+  const sceneSpan = 80 / script.scenes.length;
+  for (let i = 0; i < script.scenes.length; i++) {
+    if (task.status === 'stopped') {
+      task.current_message = 'Generación detenida por el usuario.';
+      persistTasks();
+      return;
+    }
+    const scene = script.scenes[i];
+    task.scenes[i].status = 'running';
+    task.current_message = `Escena ${i + 1}/${script.scenes.length}: ${scene.scene_prompt.slice(0, 60)}...`;
+    persistTasks();
+
+    const sceneFile = await executeAgnesVideoPipeline(task, {
+      promptOverride: scene.scene_prompt,
+      outFileName: `scene_${i + 1}.mp4`,
+      progressStart: 10 + Math.round(sceneSpan * i),
+      progressSpan: Math.round(sceneSpan),
+      finalize: false,
+    });
+
+    if (!sceneFile || !fs.existsSync(sceneFile)) {
+      throw new Error(`La escena ${i + 1} no produjo video.`);
+    }
+    sceneFiles.push(sceneFile);
+    task.scenes[i].status = 'completed';
+    task.scenes[i].video_file = sceneFile;
+    persistTasks();
+  }
+
+  // 3. Concatenate scenes into final video
+  task.current_step = 'concat';
+  task.current_progress = 92;
+  task.current_message = 'Concatenando escenas con ffmpeg...';
+  persistTasks();
+
+  const finalVideoPath = path.resolve(taskDir, 'final_video.mp4');
+  await concatVideos(sceneFiles, finalVideoPath);
+
+  task.final_video_file = finalVideoPath;
+  task.status = 'completed';
+  task.current_step = 'done';
+  task.current_progress = 100;
+  task.current_message = 'COMPLETADO';
+  task.artifacts = [
+    {
+      artifact_id: 'final_video',
+      category: 'video',
+      label_key: 'artifactFinalVideo',
+      step_key: 'concat',
+      size: fs.statSync(finalVideoPath).size,
+      exists: true,
+      deletable: false,
+    },
+    ...sceneFiles.map((f, i) => ({
+      artifact_id: `scene_${i + 1}`,
+      category: 'video',
+      label_key: `Escena ${i + 1}`,
+      step_key: 'video_gen',
+      size: fs.statSync(f).size,
+      exists: true,
+      deletable: false,
+    })),
+  ];
+  persistTasks();
+}
+
 app.post('/api/creative/preview-script', upload.none() as any, async (req: Request, res: Response) => {
   const idea = (req.body.idea || '').trim();
   const contentLang = (req.body.content_lang || 'en').trim();
   const sceneCount = parseInt(req.body.scene_count || '5', 10);
-  let sceneDurations: number[] = [5, 5, 5, 5, 5];
-  try {
-    sceneDurations = JSON.parse(req.body.scene_durations_json || '[5,5,5,5,5]');
-  } catch {}
 
   if (!idea) {
     res.status(422).json({ detail: 'Idea cannot be empty' });
     return;
   }
 
-  const geminiKey = process.env.GEMINI_API_KEY;
-  if (geminiKey) {
-    try {
-      const ai = new GoogleGenAI({ apiKey: geminiKey });
-      const prompt = `You are an expert AI screenwriter and video director.
-Create a ${sceneCount}-scene video script based on this theme:
-"${idea}"
-Language for story and narration: ${contentLang === 'zh' ? 'Chinese' : contentLang === 'es' ? 'Spanish' : 'English'}.
-For scene visual prompts, write precise English cinematic visual prompts for an AI video model.
-
-Output valid JSON only with this schema:
-{
-  "story": "Short overall story summary",
-  "scenes": [
-    { "index": 1, "scene_prompt": "Cinematic visual prompt in English...", "narration_text": "Narration text..." }
-  ],
-  "narration": "Full narration script..."
-}`;
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: { responseMimeType: 'application/json' },
-      });
-      const data = JSON.parse(response.text || '{}');
-      const scenes = data.scenes || [];
-      const narrationByScene = scenes.map((s: any) => s.narration_text || '');
-      res.json({
-        ok: true,
-        story: data.story || idea,
-        scenes,
-        narration: data.narration || narrationByScene.join(' '),
-        narration_by_scene: narrationByScene,
-      });
-      return;
-    } catch (e) {
-      console.warn('Gemini script preview failed, fallback to template:', e);
-    }
-  }
-
-  // Fallback high quality template preview
-  const scenes = Array.from({ length: sceneCount }, (_, i) => ({
-    index: i + 1,
-    scene_prompt: `Cinematic wide shot, scene ${i + 1} of ${idea}, realistic lighting, ultra high resolution 4k, vivid cinematic atmosphere.`,
-    narration_text: `Scene ${i + 1}: ${idea}. Visualizing the key moment with breathtaking detail.`,
-  }));
-
-  const narration = scenes.map((s) => s.narration_text).join(' ');
+  const script = await generateScriptScenes(idea, contentLang, sceneCount);
   res.json({
     ok: true,
-    story: `An engaging ${sceneCount}-part visual story revolving around: ${idea}.`,
-    scenes,
-    narration,
-    narration_by_scene: scenes.map((s) => s.narration_text),
+    story: script.story,
+    scenes: script.scenes,
+    narration: script.narration,
+    narration_by_scene: script.scenes.map((s) => s.narration_text),
   });
 });
 
@@ -1177,6 +1536,10 @@ app.post('/api/tasks/creative', (upload.any() as any), (req: Request, res: Respo
     idea,
     prompt: idea,
     scene_count: sceneCount,
+    content_lang: req.body.content_lang || 'es',
+    duration: parseInt(req.body.duration || '5', 10),
+    model: req.body.model,
+    orientation: req.body.orientation,
     current_step: 'init',
     current_progress: 5,
     current_message: 'Preparing creative task...',
@@ -1184,7 +1547,7 @@ app.post('/api/tasks/creative', (upload.any() as any), (req: Request, res: Respo
 
   tasksMap.set(taskId, task);
   persistTasks();
-  runTaskPipeline(taskId);
+  runCreativePipeline(taskId);
 
   res.json({ ok: true, task_id: taskId });
 });
@@ -1205,6 +1568,10 @@ app.post('/api/tasks', (upload.any() as any), (req: Request, res: Response) => {
     idea,
     prompt: idea,
     scene_count: sceneCount,
+    content_lang: req.body.content_lang || 'es',
+    duration: parseInt(req.body.duration || '5', 10),
+    model: req.body.model,
+    orientation: req.body.orientation,
     current_step: 'init',
     current_progress: 5,
     current_message: 'Preparing creative task...',
@@ -1212,7 +1579,7 @@ app.post('/api/tasks', (upload.any() as any), (req: Request, res: Response) => {
 
   tasksMap.set(taskId, task);
   persistTasks();
-  runTaskPipeline(taskId);
+  runCreativePipeline(taskId);
 
   res.json({ ok: true, task_id: taskId });
 });
@@ -1288,6 +1655,62 @@ app.post('/api/tasks/anchor', (upload.any() as any), (req: Request, res: Respons
   tasksMap.set(taskId, task);
   persistTasks();
   runTaskPipeline(taskId);
+
+  res.json({ ok: true, task_id: taskId });
+});
+
+// Manual Multi-Clip Editor task
+app.post('/api/tasks/clip-editor', (upload.any() as any), (req: Request, res: Response) => {
+  let clips: EditorClip[] = [];
+  try {
+    clips = JSON.parse(req.body.clips_json || '[]');
+  } catch {
+    res.status(422).json({ detail: 'clips_json inválido' });
+    return;
+  }
+  if (!Array.isArray(clips) || clips.length === 0) {
+    res.status(422).json({ detail: 'Se requiere al menos un clip' });
+    return;
+  }
+  if (clips.some((c) => !(c.prompt || '').trim())) {
+    res.status(422).json({ detail: 'Todos los clips necesitan un prompt' });
+    return;
+  }
+
+  // Map uploaded per-clip reference images (fieldname: ref_{i}_{j}, up to 5 each)
+  const uploaded = (req.files as Express.Multer.File[]) || [];
+  clips = clips.map((c, i) => ({
+    ...c,
+    refs: uploaded
+      .filter((u) => u.fieldname.startsWith(`ref_${i}_`))
+      .sort((a, b) => a.fieldname.localeCompare(b.fieldname))
+      .map((f) => f.path),
+  }));
+
+  const taskId = crypto.randomBytes(6).toString('hex');
+  const task: TaskItem = {
+    task_id: taskId,
+    task_type: 'clip_editor',
+    status: 'running',
+    dir_name: `${new Date().toISOString().slice(0, 10).replace(/-/g, '')}_${taskId}`,
+    creative_name: `editor_${taskId}`,
+    created_at: new Date().toISOString(),
+    prompt: clips.map((c) => c.prompt).join(' | '),
+    editor_clips: clips,
+    scene_count: clips.length,
+    duration: Math.max(2, Math.min(parseInt(req.body.duration || '5', 10), 18)),
+    model: req.body.model,
+    orientation: req.body.orientation,
+    cfg_scale: parseFloat(req.body.cfg_scale || '7.5'),
+    conditioning_inputs: (req.body.conditioning_inputs || '').trim(),
+    current_step: 'init',
+    current_progress: 3,
+    current_message: `Editor de clips: preparando ${clips.length} clip(s)...`,
+  };
+
+  tasksMap.set(taskId, task);
+  persistTasks();
+  runClipEditorPipeline(taskId);
 
   res.json({ ok: true, task_id: taskId });
 });
@@ -1390,6 +1813,28 @@ app.post('/api/tasks/:taskId/mode', (upload.none() as any), (_req: Request, res:
 });
 
 app.delete('/api/tasks/:taskId', (req: Request, res: Response) => {
+  const task = tasksMap.get(req.params.taskId);
+  if (!task) {
+    res.status(404).json({ ok: false, error: 'Task not found' });
+    return;
+  }
+  if (task.status === 'running') {
+    res.status(409).json({ ok: false, error: 'Cannot delete a running task' });
+    return;
+  }
+  // Remove workspace directories (dir_name and/or task_id variants)
+  const candidates = [task.dir_name, task.task_id].filter(Boolean) as string[];
+  for (const name of new Set(candidates)) {
+    const taskDir = path.resolve(TASKS_DIR, name);
+    if (taskDir !== TASKS_DIR && taskDir.startsWith(TASKS_DIR) && fs.existsSync(taskDir)) {
+      fs.rmSync(taskDir, { recursive: true, force: true });
+    }
+  }
+  // Remove generated thumbnail if present
+  const thumbPath = path.resolve(TASKS_DIR, `${req.params.taskId}_thumb.png`);
+  if (fs.existsSync(thumbPath)) {
+    fs.rmSync(thumbPath, { force: true });
+  }
   tasksMap.delete(req.params.taskId);
   persistTasks();
   res.json({ ok: true });

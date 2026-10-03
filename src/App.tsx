@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Layout } from './components/Layout';
 import { VideoGeneratorPanel } from './components/VideoGeneratorPanel';
+import { ClipEditorPanel } from './components/ClipEditorPanel';
 import { VideoMonitorHUD } from './components/VideoMonitorHUD';
 import { TelemetryPanel } from './components/TelemetryPanel';
 import { useVideoStore } from './store/videoStore';
@@ -17,6 +18,11 @@ export default function App() {
     setParam, 
     setCompletedVideo 
   } = useVideoStore();
+
+  // Keep active tab synced into the store so generation routes correctly
+  useEffect(() => {
+    setParam('activeTab', activeTab);
+  }, [activeTab, setParam]);
 
   // Initialize reference image and depth map if empty
   useEffect(() => {
@@ -96,7 +102,7 @@ export default function App() {
       activeTab={activeTab}
       onTabChange={setActiveTab}
       onSelectGalleryVideo={handleSelectGalleryVideo}
-      leftPanel={<VideoGeneratorPanel />}
+      leftPanel={activeTab === 'ClipEditor' ? <ClipEditorPanel /> : <VideoGeneratorPanel />}
       centerPanel={<VideoMonitorHUD />}
       rightPanel={<TelemetryPanel />}
     />
