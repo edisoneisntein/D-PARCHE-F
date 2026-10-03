@@ -17,7 +17,8 @@ import {
   CheckCircle2,
   RefreshCw,
   Activity,
-  AlertTriangle
+  AlertTriangle,
+  Trash2
 } from 'lucide-react';
 import { useVideoStore } from '../store/videoStore';
 import { VideoApiClient } from '../services/videoApiClient';
@@ -131,6 +132,26 @@ export const Layout: React.FC<LayoutProps> = ({
         }
       })
       .catch(() => {});
+  };
+
+  const handleDeleteGalleryItem = async (item: GalleryItem) => {
+    const confirmed = window.confirm(
+      `¿Eliminar "${item.title}"? Se borrará el video y sus archivos permanentemente.`
+    );
+    if (!confirmed) return;
+    try {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(item.task_id)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        alert(err?.error || 'No se pudo eliminar el video');
+        return;
+      }
+      setGalleryItems((prev) => prev.filter((g) => g.task_id !== item.task_id));
+    } catch {
+      alert('Error de red al eliminar el video');
+    }
   };
 
   const handleTabClick = (tabName: string) => {
@@ -251,6 +272,7 @@ export const Layout: React.FC<LayoutProps> = ({
         <div className="flex items-center gap-1 h-full">
           {[
             { id: 'Simple', label: 'Simple' },
+            { id: 'ClipEditor', label: 'Editor de clips' },
             { id: 'Creative', label: 'Creativo' },
             { id: 'Manuscrito', label: 'Manuscrito' },
             { id: 'Anchor', label: 'Presentador' },
@@ -558,14 +580,25 @@ export const Layout: React.FC<LayoutProps> = ({
 
                   <div className="flex items-center justify-between pt-1 border-t border-[#21262d] text-[9px]">
                     <span className="text-[#00ff41]">{item.status}</span>
-                    <a
-                      href={item.media_url}
-                      download={`agnes_${item.task_id}.mp4`}
-                      className="text-[#00f0ff] hover:underline flex items-center gap-1"
-                    >
-                      <Download size={10} />
-                      <span>Descargar</span>
-                    </a>
+                    <div className="flex items-center gap-3">
+                      <a
+                        href={item.media_url}
+                        download={`agnes_${item.task_id}.mp4`}
+                        className="text-[#00f0ff] hover:underline flex items-center gap-1"
+                      >
+                        <Download size={10} />
+                        <span>Descargar</span>
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteGalleryItem(item)}
+                        className="text-[#f85149] hover:underline flex items-center gap-1 cursor-pointer"
+                        title="Eliminar video permanentemente"
+                      >
+                        <Trash2 size={10} />
+                        <span>Eliminar</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}

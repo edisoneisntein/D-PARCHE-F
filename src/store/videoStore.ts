@@ -16,6 +16,8 @@ export interface ImageDetails {
 export interface VideoStoreState {
   // ── Inference Hyperparameters ──
   prompt: string;
+  activeTab: string;
+  creativeSceneCount: number;
   conditioningInputs: string;
   model: string;
   mode: 't2v' | 'i2v' | 'ti2vid' | 'keyframes';
@@ -68,6 +70,8 @@ const initialPrompt = `rigid ghost forward and 900 - 2i00 ponytail canvas ceer b
 
 export const useVideoStore = create<VideoStoreState>((set, get) => ({
   prompt: initialPrompt,
+  activeTab: 'Simple',
+  creativeSceneCount: 5,
   conditioningInputs: 'blurry, low quality, artifacts, temporal jitter, flickering, deformed limbs',
   model: 'agnes-video-v2.0',
   mode: 'i2v',
@@ -184,22 +188,35 @@ export const useVideoStore = create<VideoStoreState>((set, get) => ({
     });
 
     try {
+      const isCreative = state.activeTab === 'Creative';
       const formData = new FormData();
-      formData.append('prompt', state.prompt);
-      formData.append('mode', state.mode);
+
+      if (isCreative) {
+        formData.append('idea', state.prompt);
+        formData.append('scene_count', String(state.creativeSceneCount));
+        formData.append('content_lang', 'es');
+        formData.append('status', 'running');
+      } else {
+        formData.append('prompt', state.prompt);
+        formData.append('mode', state.mode);
+        formData.append('conditioning_inputs', state.conditioningInputs);
+        formData.append('seed', String(state.seed));
+      }
       formData.append('duration', String(state.duration));
       formData.append('model', state.model);
       formData.append('cfg_scale', String(state.cfgScale));
-      formData.append('seed', String(state.seed));
       formData.append('fps', String(state.fps));
-      formData.append('conditioning_inputs', state.conditioningInputs);
       formData.append('orientation', state.orientation);
 
       if (state.referenceImageFile) {
         formData.append('reference_image', state.referenceImageFile);
       }
 
-      const taskId = await VideoApiClient.submitTask(formData, signal);
+      const taskId = await VideoApiClient.submitTask(
+        formData,
+        signal,
+        isCreative ? '/api/tasks/creative' : '/api/tasks/simple',
+      );
       set({
         activeTaskId: taskId,
         pipelineStatus: 'RUNNING',
